@@ -1,15 +1,37 @@
 import os
-import pdfplumber
+from database import (
+    get_all_pending_requests,
+    get_user_conversations,
+    init_db,
+    verify_user,
+)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-pdf_yolu = os.path.join(BASE_DIR, "BELGELER", "cimtas_ik_rehberi.pdf")
+# 1. Veritabanını ve tabloları başlat
+print("1. Veritabanı başlatılıyor...")
+init_db()
 
-if os.path.exists(pdf_yolu):
-    with pdfplumber.open(pdf_yolu) as pdf:
-        print(f"✅ PDF Açıldı! Toplam Sayfa Sayısı: {len(pdf.pages)}\n")
-        
-        for i, page in enumerate(pdf.pages):
-            metin = page.extract_text()
-            print(f"=== SAYFA {i+1} (TAM METİN) ===")
-            print(metin)  # Sınırlandırma kaldırıldı, tamamını basar
-            print("=" * 50)
+# 2. .db dosyasının diskte oluştuğunu kontrol et
+db_exists = os.path.exists("app_data.db")
+print(f"2. 'app_data.db' dosyası mevcut mu? -> {db_exists}")
+
+# 3. .env'den çekilen bir kullanıcı ile giriş test et
+# Note: '.env' dosyanızdaki geçerli bir kullanıcı adı ve şifreyi yazın
+test_user = "admin"  # Kendi kullanıcı adınızla değiştirin
+test_pass = "1234"  # Kendi şifrenizle değiştirin
+
+user = verify_user(test_user, test_pass)
+if user:
+    print(
+        f"3. Kullanıcı Doğrulandı! -> Adı: {user[0]}, Rolü: {user[1]}"
+    )
+else:
+    print(
+        "3. Kullanıcı doğrulanamadı. .env verilerini ve kullanıcı adı/şifreyi kontrol edin."
+    )
+
+# 4. Fonksiyonların hata vermeden çalıştığını doğrula
+conversations = get_user_conversations(test_user)
+print(f"4. Sohbet geçmişi sorgusu başarılı (Kayıt sayısı: {len(conversations)})")
+
+pending_requests = get_all_pending_requests()
+print(f"5. Bekleyen talepler sorgusu başarılı (Kayıt sayısı: {len(pending_requests)})")
