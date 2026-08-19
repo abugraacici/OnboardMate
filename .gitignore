@@ -4,3 +4,5 @@ __pycache__/
 *.db
 *.pdf
 BELGELER/
+chroma_db/
+temp_docs/
