@@ -10,7 +10,7 @@ from config import (
     FACTORY_MAPS_EMBED_URL,
     FACTORY_MAPS_LINK_URL,
 )
-from rag import load_and_split_pdf_folder, get_relevant_context
+from rag import sync_pdf_index, get_relevant_context
 from database import (
     init_db, 
     verify_user, 
@@ -54,8 +54,9 @@ if "qs_panel_expanded" not in st.session_state:
 if "pdf_panel_expanded" not in st.session_state:
     st.session_state.pdf_panel_expanded = False
 
-# --- İK REHBER DOKÜMANLARI (BELGELER klasöründeki tüm PDF'ler) ---
-pdf_chunks = load_and_split_pdf_folder(BELGELER_DIR)
+# --- İK REHBER DOKÜMANLARI (BELGELER klasöründeki tüm PDF'ler, RAG index'i) ---
+with st.spinner("Doküman rehberi kontrol ediliyor..."):
+    sync_pdf_index(BELGELER_DIR)
 
 def generate_chat_title(first_prompt: str) -> str:
     try:
@@ -208,8 +209,7 @@ if user_role == "İnsan Kaynakları":
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            st.cache_data.clear()
-            st.sidebar.success(f"'{uploaded_file.name}' yüklendi!")
+            st.sidebar.success(f"'{uploaded_file.name}' yüklendi! RAG index'i güncelleniyor...")
             st.rerun()
 
         # MEVCUT PDF'LERİ LİSTELEME VE SİLME
@@ -231,7 +231,6 @@ if user_role == "İnsan Kaynakları":
                                 pdf_path = os.path.join(docs_dir, pdf_name)
                                 if os.path.exists(pdf_path):
                                     os.remove(pdf_path)
-                                    st.cache_data.clear()
                                     st.session_state.pdf_panel_expanded = True
                                     st.sidebar.success(f"'{pdf_name}' silindi!")
                                     st.rerun()
@@ -288,7 +287,7 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    relevant_pdf_info = get_relevant_context(prompt, pdf_chunks)
+    relevant_pdf_info = get_relevant_context(prompt)
 
     loc_context = f"--- ŞİRKET KONUM BİLGİSİ ---\nFabrika Adresi: {FACTORY_ADDRESS}\n"
 

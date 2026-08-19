@@ -10,6 +10,11 @@ BELGELER_DIR = os.path.join(BASE_DIR, "BELGELER")
 
 # --- MODEL ---
 OLLAMA_MODEL = "qwen2.5:7b"
+EMBEDDING_MODEL = "nomic-embed-text"
+
+# --- RAG / VEKTÖR VERİTABANI ---
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
+CHROMA_COLLECTION_NAME = "cimtas_ik_belgeleri"
 
 # --- İK KAYIT ANAHTARI ---
 IK_SECRET_KEY = os.getenv("IK_SECRET_KEY")
