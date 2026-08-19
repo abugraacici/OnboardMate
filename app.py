@@ -1,9 +1,16 @@
 import os
-import urllib.parse
 import streamlit as st
 import streamlit.components.v1 as components
-import pdfplumber
 import ollama
+from config import (
+    BELGELER_DIR,
+    OLLAMA_MODEL,
+    IK_SECRET_KEY,
+    FACTORY_ADDRESS,
+    FACTORY_MAPS_EMBED_URL,
+    FACTORY_MAPS_LINK_URL,
+)
+from rag import load_and_split_pdf_folder, get_relevant_context
 from database import (
     init_db, 
     verify_user, 
@@ -18,12 +25,6 @@ from database import (
     delete_preset_question,
     increment_question_click,
 )
-
-# Fabrika Konumu (Bursa Serbest Bölgesi) - sabit adres.
-# İleride PDF ile bina x/y koordinatları ve iç yönlendirme eklenecek.
-FACTORY_ADDRESS = "Ata Sb.Mah. Müge Cad, Bursa Serbest Bölgesi No:17, 16600 Gemlik/Bursa"
-FACTORY_MAPS_EMBED_URL = f"https://www.google.com/maps?q={urllib.parse.quote(FACTORY_ADDRESS)}&output=embed"
-FACTORY_MAPS_LINK_URL = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(FACTORY_ADDRESS)}"
 
 # 1. SAYFA YAPILANDIRMASI
 st.set_page_config(
@@ -53,48 +54,13 @@ if "qs_panel_expanded" not in st.session_state:
 if "pdf_panel_expanded" not in st.session_state:
     st.session_state.pdf_panel_expanded = False
 
-# --- PDF DOKÜMANINI PARÇALAYARAK OKUMA ---
-@st.cache_data
-def load_and_split_pdf(pdf_path: str):
-    chunks = []
-    if os.path.exists(pdf_path):
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 15]
-                    chunks.extend(paragraphs)
-    return chunks
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PDF_FILE_PATH = os.path.join(BASE_DIR, "BELGELER", "cimtas_ik_rehberi.pdf")
-pdf_chunks = load_and_split_pdf(PDF_FILE_PATH)
-
-def get_relevant_context(query: str, chunks: list, top_k: int = 5) -> str:
-    if not chunks:
-        return "Şirket rehber dokümanı yüklü değil."
-    
-    query_words = set(query.lower().split())
-    scored_chunks = []
-    
-    for chunk in chunks:
-        chunk_lower = chunk.lower()
-        score = sum(1 for word in query_words if len(word) > 2 and word in chunk_lower)
-        if score > 0:
-            scored_chunks.append((score, chunk))
-            
-    scored_chunks.sort(key=lambda x: x[0], reverse=True)
-    top_chunks = [item[1] for item in scored_chunks[:top_k]]
-    
-    if not top_chunks:
-        return "Soruyla doğrudan ilgili bilgi PDF rehberinde bulunamadı."
-        
-    return "\n\n".join(top_chunks)
+# --- İK REHBER DOKÜMANLARI (BELGELER klasöründeki tüm PDF'ler) ---
+pdf_chunks = load_and_split_pdf_folder(BELGELER_DIR)
 
 def generate_chat_title(first_prompt: str) -> str:
     try:
         res = ollama.chat(
-            model='qwen2.5:7b',
+            model=OLLAMA_MODEL,
             messages=[{
                 'role': 'user', 
                 'content': f"Şu kullanıcı sorusunu 3-4 kelimelik, kısa, net ve anlaşılır bir sohbet başlığı yap. Sadece başlığı yaz: '{first_prompt}'"
@@ -140,8 +106,6 @@ if not st.session_state.logged_in:
 
         if st.button("Kayıt Ol", use_container_width=True):
             if reg_fullname and reg_user and reg_pass:
-                IK_SECRET_KEY = os.getenv("IK_SECRET_KEY")
-                
                 selected_role = "Çalışan"
                 if reg_role == "İnsan Kaynakları (Admin)":
                     if ik_key_input.strip() == IK_SECRET_KEY:
@@ -239,8 +203,8 @@ if user_role == "İnsan Kaynakları":
         uploaded_file = st.file_uploader("Şirket Rehberi / PDF", type=["pdf"])
         
         if uploaded_file is not None:
-            save_path = os.path.join(BASE_DIR, "BELGELER", uploaded_file.name)
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            save_path = os.path.join(BELGELER_DIR, uploaded_file.name)
+            os.makedirs(BELGELER_DIR, exist_ok=True)
             with open(save_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
@@ -249,7 +213,7 @@ if user_role == "İnsan Kaynakları":
             st.rerun()
 
         # MEVCUT PDF'LERİ LİSTELEME VE SİLME
-        docs_dir = os.path.join(BASE_DIR, "BELGELER")
+        docs_dir = BELGELER_DIR
         if os.path.exists(docs_dir):
             pdf_files = [f for f in os.listdir(docs_dir) if f.endswith(".pdf")]
 
@@ -352,7 +316,7 @@ if prompt:
         with st.status("Yerel İK modeli yanıt hazırlıyor...", expanded=False) as status:
             try:
                 response = ollama.chat(
-                    model='qwen2.5:7b',
+                    model=OLLAMA_MODEL,
                     messages=ollama_messages,
                     options={'temperature': 0.1}
                 )
