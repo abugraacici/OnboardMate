@@ -1,19 +1,17 @@
-import os
 import hashlib
-import pdfplumber
-import ollama
+import os
+import re
 import chromadb
+import ollama
+import pdfplumber
 import streamlit as st
 
-from config import CHROMA_DIR, CHROMA_COLLECTION_NAME, EMBEDDING_MODEL
+from config import CHROMA_COLLECTION_NAME, CHROMA_DIR, EMBEDDING_MODEL
 
 
 @st.cache_resource
 def _get_chroma_collection():
-    """ChromaDB'ye kalıcı (disk tabanlı) bağlantıyı önbelleğe alır.
-    Streamlit her rerun'da yeniden bağlantı açmasın diye cache_resource kullanılıyor
-    (cache_data DEĞİL, çünkü bu bir veri değil, canlı bir bağlantı/istemci nesnesi).
-    """
+    """ChromaDB'ye kalıcı (disk tabanlı) bağlantıyı önbelleğe alır."""
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     return client.get_or_create_collection(name=CHROMA_COLLECTION_NAME)
 
@@ -24,13 +22,47 @@ def _embed(text: str):
 
 
 def _split_pdf_into_chunks(pdf_path: str):
+    """PDF'i dümdüz satır satır bölmek yerine; madde işaretleri (•, -, *), 
+    numaralandırmalar (1., 2.) veya 'Soru:' / 'Cevap:' başlıklarına göre
+    anlamsal bütünlük oluşturan gruplar halinde parçalar.
+    """
     chunks = []
+    current_chunk = []
+
+    # Yeni bir madde veya başlık başlatan regex deseni
+    bullet_pattern = re.compile(r"^([•\-\*]|(\d+[\.\)]))\s*")
+
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
-            if text:
-                paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 15]
-                chunks.extend(paragraphs)
+            if not text:
+                continue
+
+            lines = text.split("\n")
+            for line in lines:
+                clean_line = line.strip()
+                if not clean_line:
+                    continue
+
+                # Satırın yeni bir madde, soru veya cevap başlığı olup olmadığını kontrol et
+                is_bullet = bool(bullet_pattern.match(clean_line))
+                is_qa = clean_line.lower().startswith(("soru:", "cevap:", "madde", "başlık"))
+
+                # Yeni bir madde/başlık geldiyse elimizdeki birikmiş parçayı paketle
+                if (is_bullet or is_qa) and current_chunk:
+                    chunk_text = " ".join(current_chunk)
+                    if len(chunk_text) > 15:
+                        chunks.append(chunk_text)
+                    current_chunk = []
+
+                current_chunk.append(clean_line)
+
+    # En son kalan bloğu ekle
+    if current_chunk:
+        chunk_text = " ".join(current_chunk)
+        if len(chunk_text) > 15:
+            chunks.append(chunk_text)
+
     return chunks
 
 
@@ -42,18 +74,7 @@ def _file_version(pdf_path: str) -> str:
 
 
 def sync_pdf_index(belgeler_dir: str) -> None:
-    """BELGELER klasörünü ChromaDB koleksiyonuyla senkronize eder.
-
-    - Yeni eklenen PDF'leri parçalayıp embed eder ve koleksiyona ekler.
-    - İçeriği değişen (mtime/boyut değişen) PDF'lerin eski chunk'larını silip
-      yeniden embed eder.
-    - Klasörden silinen PDF'lerin chunk'larını koleksiyondan kaldırır.
-    - Değişmeyen dosyaları YENİDEN EMBED ETMEZ (versiyon hash'i eşleşiyorsa atlar) -
-      böylece her Streamlit rerun'ında gereksiz Ollama çağrısı yapılmaz.
-
-    Ollama'ya ulaşılamazsa (embedding hatası) sessizce durur; chat akışını bozmaz,
-    sadece o PDF bir sonraki başarılı senkronizasyonda tekrar denenir.
-    """
+    """BELGELER klasörünü ChromaDB koleksiyonuyla senkronize eder."""
     try:
         collection = _get_chroma_collection()
     except Exception:
@@ -73,15 +94,15 @@ def sync_pdf_index(belgeler_dir: str) -> None:
     except Exception:
         return
 
-    indexed_versions = {}   # filename -> {version, ...}
-    ids_by_file = {}        # filename -> [chunk_id, ...]
+    indexed_versions = {}
+    ids_by_file = {}
     for _id, meta in zip(existing["ids"], existing["metadatas"]):
         fname = meta.get("filename")
         ver = meta.get("file_version")
         indexed_versions.setdefault(fname, set()).add(ver)
         ids_by_file.setdefault(fname, []).append(_id)
 
-    # Klasörden silinmiş dosyaların chunk'larını koleksiyondan kaldır
+    # Klasörden silinmiş dosyaların chunk'larını kaldır
     for fname, ids in ids_by_file.items():
         if fname not in current_files and ids:
             collection.delete(ids=ids)
@@ -89,7 +110,7 @@ def sync_pdf_index(belgeler_dir: str) -> None:
     # Yeni / değişmiş dosyaları işle
     for fname, version in current_files.items():
         if version in indexed_versions.get(fname, set()):
-            continue  # değişmemiş, embed etmeye gerek yok
+            continue  # değişmemiş, atla
 
         old_ids = ids_by_file.get(fname, [])
         if old_ids:
@@ -107,7 +128,6 @@ def sync_pdf_index(belgeler_dir: str) -> None:
         try:
             embeddings = [_embed(chunk) for chunk in chunks]
         except Exception:
-            # Ollama'ya ulaşılamadı; bu dosyayı bir sonraki senkronizasyona bırak
             continue
 
         ids = [f"{fname}::{i}::{version}" for i in range(len(chunks))]
@@ -122,7 +142,7 @@ def sync_pdf_index(belgeler_dir: str) -> None:
 
 
 def get_relevant_context(query: str, top_k: int = 5) -> str:
-    """Soruya en alakalı doküman parçalarını ChromaDB'den (embedding benzerliğiyle) getirir."""
+    """Soruya en alakalı doküman parçalarını ChromaDB'den getirir."""
     try:
         collection = _get_chroma_collection()
         count = collection.count()
