@@ -25,6 +25,10 @@ from database import (
     get_preset_questions,
     delete_preset_question,
     increment_question_click,
+    init_feedback_db,       # <-- Yeni Eklendi
+    save_feedback,         # <-- Yeni Eklendi
+    get_pdf_alarm_status,   # <-- Yeni Eklendi
+    reset_pdf_feedback
 )
 
 # 1. SAYFA YAPILANDIRMASI
@@ -36,6 +40,7 @@ st.set_page_config(
 
 # Veritabanını başlat
 init_db()
+init_feedback_db()
 
 # Oturum durumları (Session State)
 if "logged_in" not in st.session_state:
@@ -183,30 +188,30 @@ if st.sidebar.button("➕ Yeni Sohbet Başlat", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("💬 Sohbet Geçmişi")
-user_convs = get_user_conversations(st.session_state.username)
+with st.sidebar.expander("💬 Sohbet Geçmişi", expanded=False):
+    user_convs = get_user_conversations(st.session_state.username)
 
-if user_convs:
-    for conv_id, title, c_time in user_convs:
-        col_title, col_del = st.sidebar.columns([5, 1])
-        is_active = (conv_id == st.session_state.current_session_id)
-        btn_label = f"📌 {title}" if is_active else f"📝 {title}"
-        
-        with col_title:
-            if st.button(btn_label, key=f"conv_{conv_id}", use_container_width=True):
-                st.session_state.current_session_id = conv_id
-                st.session_state.messages = get_session_chat_history(conv_id)
-                st.rerun()
-                
-        with col_del:
-            if st.button("🗑️", key=f"del_{conv_id}", help="Sohbeti Sil"):
-                delete_conversation(conv_id)
-                if st.session_state.current_session_id == conv_id:
-                    st.session_state.current_session_id = None
-                    st.session_state.messages = []
-                st.rerun()
-else:
-    st.sidebar.caption("Henüz sohbet geçmişiniz yok.")
+    if user_convs:
+        for conv_id, title, c_time in user_convs:
+            col_title, col_del = st.columns([5, 1])
+            is_active = (conv_id == st.session_state.current_session_id)
+            btn_label = f"📌 {title}" if is_active else f"📝 {title}"
+            
+            with col_title:
+                if st.button(btn_label, key=f"conv_{conv_id}", use_container_width=True):
+                    st.session_state.current_session_id = conv_id
+                    st.session_state.messages = get_session_chat_history(conv_id)
+                    st.rerun()
+                    
+            with col_del:
+                if st.button("🗑️", key=f"del_{conv_id}", help="Sohbeti Sil"):
+                    delete_conversation(conv_id)
+                    if st.session_state.current_session_id == conv_id:
+                        st.session_state.current_session_id = None
+                        st.session_state.messages = []
+                    st.rerun()
+    else:
+        st.caption("Henüz sohbet geçmişiniz yok.")
 
 # ------------------------------------------------------------------------------
 # İK YÖNETİM PANELİ (Sadece İK Rolüne Görünür)
@@ -229,18 +234,20 @@ if user_role == "İnsan Kaynakları":
 
             st.markdown("---")
             existing_qs = get_preset_questions(limit=50)
-            st.caption(f"Kayıtlı Hazır Sorular ({len(existing_qs) if existing_qs else 0})")
-            if existing_qs:
-                for q_id, q_text, q_clicks in existing_qs:
-                    c_txt, c_del = st.columns([4, 1])
-                    with c_txt:
-                        st.caption(f"• {q_text} ({q_clicks} tık)")
-                    with c_del:
-                        if st.button("🗑️", key=f"del_q_{q_id}", help="Soruyu Sil"):
-                            delete_preset_question(q_id)
-                            st.rerun()
-            else:
-                st.caption("Henüz kayıtlı soru yok.")
+            q_count = len(existing_qs) if existing_qs else 0
+            
+            with st.expander(f"📋 Kayıtlı Hazır Sorular ({q_count})", expanded=False):
+                if existing_qs:
+                    for q_id, q_text, q_clicks in existing_qs:
+                        c_txt, c_del = st.columns([4, 1])
+                        with c_txt:
+                            st.caption(f"• {q_text}")
+                        with c_del:
+                            if st.button("🗑️", key=f"del_q_{q_id}", help="Soruyu Sil"):
+                                delete_preset_question(q_id)
+                                st.rerun()
+                else:
+                    st.caption("Henüz kayıtlı soru yok.")
 
         # 2. PDF Doküman Yönetimi
         with tab_pdf_mgmt:
@@ -258,24 +265,41 @@ if user_role == "İnsan Kaynakları":
             st.markdown("---")
             if os.path.exists(BELGELER_DIR):
                 pdf_files = [f for f in os.listdir(BELGELER_DIR) if f.lower().endswith(".pdf")]
-                st.caption(f"Yüklü PDF Belgeleri ({len(pdf_files)})")
-                if pdf_files:
-                    for pdf_name in pdf_files:
-                        c_pdf, c_del = st.columns([4, 1])
-                        with c_pdf:
-                            st.caption(f"• {pdf_name}")
-                        with c_del:
-                            if st.button("🗑️", key=f"del_pdf_{pdf_name}", help="PDF'i Sil"):
-                                pdf_path = os.path.join(BELGELER_DIR, pdf_name)
-                                if os.path.exists(pdf_path):
-                                    os.remove(pdf_path)
-                                delete_pdf_from_index(pdf_name)
-                                st.session_state.pdf_index_synced = False
-                                st.session_state.saved_pdf_names.discard(pdf_name)
-                                st.rerun()
-                else:
-                    st.caption("Henüz yüklenmiş PDF yok.")
-
+                pdf_count = len(pdf_files)
+                
+                # Veritabanından PDF alarm istatistiklerini çekiyoruz
+                alarm_stats = get_pdf_alarm_status()
+                
+                with st.expander(f"📁 Yüklü PDF Belgeleri ({pdf_count})", expanded=False):
+                    if pdf_files:
+                        for pdf_name in pdf_files:
+                            # 3 sütunlu yapı: Bilgi | Sıfırla | Sil
+                            c_pdf, c_reset, c_del = st.columns([3, 1, 1])
+                            info = alarm_stats.get(pdf_name, {"total": 0, "rate": 0, "alarm": False})
+                            
+                            with c_pdf:
+                                if info["alarm"]:
+                                    st.caption(f"🔴 **{pdf_name}** — ⚠️ *REVİZYON GEREKLİ! (%{info['rate']} Olumsuz - {info['total']} Oy)*")
+                                else:
+                                    st.caption(f"• {pdf_name} *(Oy: {info['total']} | Olumsuz: %{info['rate']})*")
+                            
+                            with c_reset:
+                                if st.button("🔄", key=f"reset_pdf_{pdf_name}", help="Oyları ve İkazı Sıfırla"):
+                                    reset_pdf_feedback(pdf_name)
+                                    st.toast(f"'{pdf_name}' oyları sıfırlandı!", icon="🔄")
+                                    st.rerun()
+                                    
+                            with c_del:
+                                if st.button("🗑️", key=f"del_pdf_{pdf_name}", help="PDF'i Sil"):
+                                    pdf_path = os.path.join(BELGELER_DIR, pdf_name)
+                                    if os.path.exists(pdf_path):
+                                        os.remove(pdf_path)
+                                    delete_pdf_from_index(pdf_name)
+                                    st.session_state.pdf_index_synced = False
+                                    st.session_state.saved_pdf_names.discard(pdf_name)
+                                    st.rerun()
+                    else:
+                        st.caption("Henüz yüklenmiş PDF yok.")
 st.sidebar.markdown("---")
 if st.sidebar.button("🚪 Çıkış Yap", use_container_width=True):
     st.session_state.logged_in = False
@@ -309,13 +333,37 @@ if preset_questions:
                 st.session_state.preset_prompt = q_text
                 st.rerun()
 
-# 💬 SOHBET MESAJLARI (Açılır / Kapanır Butonlu Bölüm)
+# 💬 SOHBET MESAJLARI VE GERİ BİLDİRİM (THUMBS)
 if st.session_state.messages:
-    with st.expander("💬 Sohbet Mesajlarını Gizle / Göster", expanded=True):
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
+    for i, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            
+            # Sadece asistan yanıtlarının altına oylama butonları yerleştirilir
+            if message["role"] == "assistant":
+                fb_key = f"fb_{st.session_state.current_session_id}_{i}"
+                
+                # Oylama butonunu render et
+                rating = st.feedback("thumbs", key=fb_key)
+                
+                # Kullanıcı tıklama yaptığı an (0: 👎, 1: 👍)
+                if rating is not None and f"saved_{fb_key}" not in st.session_state:
+                    user_prompt = st.session_state.messages[i-1]["content"] if i > 0 else "Bilinmeyen Soru"
+                    used_file = message.get("source_file", "cimtas_siksorulansorular.pdf")
+                    
+                    # Veritabanına kaydet
+                    save_feedback(
+                        username=st.session_state.get("username", "Anonim"),
+                        filename=used_file,
+                        prompt=user_prompt,
+                        response=message["content"],
+                        rating=rating
+                    )
+                    
+                    # Çift kaydı önlemek için işaret koy ve paneli tazelemek için yenile
+                    st.session_state[f"saved_{fb_key}"] = True
+                    st.toast("Geri bildiriminiz kaydedildi!", icon="✅")
+                    st.rerun()
 # 🔻 EKRANIN EN ALTINA SABİTLENMİŞ ARAMA/GİRİŞ ÇUBUĞU (ChatGPT / AI Standardı)
 prompt = st.chat_input("İnsan kaynakları hakkında bir soru sorun...")
 
@@ -401,7 +449,7 @@ if prompt:
                 response_text = "⚠️ Ollama uygulamasıyla bağlantı kurulamadı. Modelin yüklü ve Ollama servisinin açık olduğundan emin olun."
                 st.error(response_text)
 
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
+            st.session_state.messages.append({"role": "assistant", "content": response_text,"source_file": "cimtas_sıksorulansorular.pdf"})
             save_chat_message(st.session_state.current_session_id, "assistant", response_text)
 
     # Akıcı şekilde ekranı tazeleyip arama çubuğunu en altta tut

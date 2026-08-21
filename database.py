@@ -447,8 +447,79 @@ def get_all_pending_requests():
         return cursor.fetchall()
     finally:
         conn.close()
+import sqlite3
 
+def init_feedback_db():
+    """Oylamaların ve geri bildirimlerin tutulacağı tabloyu oluşturur."""
+    conn = sqlite3.connect("app_data.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feedbacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            filename TEXT,
+            prompt TEXT,
+            response TEXT,
+            rating INTEGER, -- 1: 👍, 0: 👎
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
 
+def save_feedback(username, filename, prompt, response, rating):
+    """Kullanıcının oyunu (👍/👎) veritabanına kaydeder."""
+    conn = sqlite3.connect("app_data.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO feedbacks (username, filename, prompt, response, rating)
+        VALUES (?, ?, ?, ?, ?)
+    """, (username, filename, prompt, response, rating))
+    conn.commit()
+    conn.close()
+
+def get_pdf_alarm_status():
+    """
+    Doküman bazında oyları analiz eder.
+    En az 20 oy toplanmış VE olumsuzluk oranı %70 veya üzerindeyse alarm üretir.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                COALESCE(NULLIF(filename, ''), 'cimtas_sıksorulansorular.pdf') as pdf_file,
+                COUNT(*) as total_votes,
+                SUM(CASE WHEN rating = 0 THEN 1 ELSE 0 END) as dislikes
+            FROM feedbacks
+            GROUP BY pdf_file
+        """)
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+    
+    alarm_dict = {}
+    for filename, total, dislikes in rows:
+        dislike_rate = (dislikes / total) * 100 if total > 0 else 0
+        # Eşik Şartı: En az 20 oy VE %70+ olumsuzluk
+        has_alarm = (total >= 20) and (dislike_rate >= 70.0)
+        alarm_dict[filename] = {
+            "total": total,
+            "dislikes": dislikes,
+            "rate": round(dislike_rate, 1),
+            "alarm": has_alarm
+        }
+    return alarm_dict
+def reset_pdf_feedback(filename):
+    """Belirli bir PDF dosyası için toplanan tüm oyları ve geri bildirimleri sıfırlar."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM feedbacks WHERE filename = ?", (filename,))
+        conn.commit()
+    finally:
+        conn.close()
 if __name__ == "__main__":
     init_db()
+    init_feedback_db()
     print("Veritabanı ve tablolar başarıyla oluşturuldu/güncellendi.")
